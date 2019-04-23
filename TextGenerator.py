@@ -14,7 +14,7 @@ timesteps = 100
 device = torch.device("cpu")
 MAX_LENGTH = 150
 batch_size = 64
-epochs = 2
+epochs = 1
 
 attn_model = 'dot'
 encoder_n_layers = 2
@@ -250,9 +250,9 @@ class BeamSearchDecoder(nn.Module):
 
       beams.remove(beam)
       # Prune down to beam_width after 8 iterations
-      #if len(beams) % (self.beam_width ** 8) == 0 and self.beam_width > 1:
-      #  beams.sort(key = lambda x: x[0][1], reverse=True)
-      #  beams = beams[:50]
+      if len(beams) % (self.beam_width ** 8) == 0 and self.beam_width > 1:
+        beams.sort(key = lambda x: x[0][1], reverse=True)
+        beams = beams[:50]
     candidates.sort(key = lambda x: x[1], reverse=True)
     return candidates
 
@@ -300,10 +300,10 @@ def train(input_variable, target_variable, max_target_len, encoder, decoder, enc
           decoder_output, decoder_hidden, attentional_hidden  = decoder(decoder_input, decoder_hidden, encoder_outputs)
           # Take most likely output across the batches
           preds_confidence, preds = decoder_output.topk(1, dim=1)
-          decoder_input = torch.Tensor([[to_categorical(preds[i][0], vocab_size) for i in range(batch_size)]])
+          decoder_input = torch.LongTensor([[preds[i][0] for i in range(batch_size)]])
           decoder_input = decoder_input.to(device)
           # Calculate and accumulate loss
-          xLoss = XELoss(decoder_output, target_variable[t])
+          xLoss = XELoss(decoder_output, torch.Tensor([to_categorical(x, vocab_size) for x in target_variable[t]]))
           loss += xLoss
           print_losses.append(xLoss)
 
@@ -326,6 +326,7 @@ def trainIters(epoch, model_name, train_lines, test_lines, encoder, decoder, enc
     print('Initializing')
     start_iteration = 1
     print_loss = 0
+    learning_rate = .001
 
     # Training loop
     print("Training")
@@ -341,6 +342,12 @@ def trainIters(epoch, model_name, train_lines, test_lines, encoder, decoder, enc
         target_variable = np.transpose(target_variable, (1, 0))
 
         max_target_len = timesteps
+
+        #######TEST############
+        if (step + 1) % 10000 == 0:
+          learning_rate = learning_rate ^ 1.11
+          encoder_optimizer = torch.optim.Adam(encoder.parameters(), lr=learning_rate)
+          decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=learning_rate * 5)
 
         # Run a training iteration with batch
         loss = train(input_variable, target_variable, max_target_len, encoder, decoder, encoder_optimizer, decoder_optimizer, batch_size, clip)
@@ -386,7 +393,7 @@ decoder_learning_ratio = 5.0
 n_iteration = num_batches // batch_size
 print_every = 1
 save_every = 500
-beam_width = 3
+beam_width = 2
 
 encoder.train()
 decoder.train()
@@ -394,7 +401,7 @@ decoder.train()
 searcher = BeamSearchDecoder(encoder, decoder, beam_width)
 
 for epoch in range(epochs):
-  learning_rate = .0005 / (1 + epoch*50)
+  learning_rate = .001 / (1 + epoch*100)
   encoder_optimizer = torch.optim.Adam(encoder.parameters(), lr=learning_rate)
   decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
 
@@ -402,10 +409,10 @@ for epoch in range(epochs):
   test_lines = iter(xtest_lines)
   trainIters(epoch, model_name, train_lines, test_lines, encoder, decoder, encoder_optimizer, decoder_optimizer, encoder_n_layers, decoder_n_layers, n_iteration, batch_size, print_every, clip)
 
-sentences = ['To be or not to be', 'For whom', 'Do my eyes', 'All that glitters is not', 'Hell is empty and all the devils are', 'Something wicked this']
+sentences = ['To be or not to be ', 'For whom ', 'Do my eyes ', 'All that glitters is not ', 'Hell is empty and all the devils are ', 'To thine own self be true, and it must follow, as the night the day, thou canst ']
 with open('res.txt', 'w+') as f:
   for sentence in sentences:
-    words = evaluate(searcher, sentence, 100)
+    words = evaluate(searcher, sentence, MAX_LENGTH)
     if str(type(searcher)) == "<class '__main__.BeamSearchDecoder'>":
       for word in words:
         f.write(sentence + word)
